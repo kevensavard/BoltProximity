@@ -3,7 +3,7 @@ const express = require('express');
     const { Server } = require('socket.io');
     const cors = require('cors');
     const { v4: uuidv4 } = require('uuid');
-    const sqlite3 = require('sqlite3').verbose();
+    const { Client } = require('pg');
 
     const app = express();
     app.use(cors());
@@ -15,26 +15,14 @@ const express = require('express');
       }
     });
 
-    const db = new sqlite3.Database('./chat.db');
-    db.serialize(() => {
-      db.run(`
-        CREATE TABLE IF NOT EXISTS messages (
-          id TEXT PRIMARY KEY,
-          room TEXT,
-          userId TEXT,
-          username TEXT,
-          message TEXT,
-          timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-      db.run(`
-        CREATE TABLE IF NOT EXISTS users (
-          id TEXT PRIMARY KEY,
-          username TEXT UNIQUE,
-          createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
+    const client = new Client({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false }
     });
+
+    client.connect()
+      .then(() => console.log('Connected to PostgreSQL'))
+      .catch(err => console.error('Connection error', err));
 
     const activeRooms = new Map();
 
@@ -44,8 +32,8 @@ const express = require('express');
       socket.on('authenticate', async ({ username }, callback) => {
         try {
           const userId = uuidv4();
-          db.run(
-            'INSERT INTO users (id, username) VALUES (?, ?)',
+          await client.query(
+            'INSERT INTO users (id, username) VALUES ($1, $2)',
             [userId, username]
           );
           socket.userId = userId;
@@ -65,12 +53,12 @@ const express = require('express');
         }
         activeRooms.get(room).add(socket.userId);
 
-        db.all(
-          'SELECT * FROM messages WHERE room = ? ORDER BY timestamp ASC LIMIT 100',
+        client.query(
+          'SELECT * FROM messages WHERE room = $1 ORDER BY timestamp ASC LIMIT 100',
           [room],
-          (err, rows) => {
+          (err, res) => {
             if (!err) {
-              socket.emit('roomHistory', rows);
+              socket.emit('roomHistory', res.rows);
             }
           }
         );
@@ -86,8 +74,8 @@ const express = require('express');
         const messageId = uuidv4();
         const timestamp = new Date().toISOString();
         
-        db.run(
-          'INSERT INTO messages (id, room, userId, username, message, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+        client.query(
+          'INSERT INTO messages (id, room, userId, username, message, timestamp) VALUES ($1, $2, $3, $4, $5, $6)',
           [messageId, room, socket.userId, socket.username, message, timestamp],
           (err) => {
             if (!err) {
